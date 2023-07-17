@@ -1,0 +1,102 @@
+import pandas as pd
+import numpy as np
+import logging
+from binance.um_futures import UMFutures
+import time
+from binance.lib.utils import config_logging
+from binance.error import ClientError
+
+def grab_history_OI(symbol):
+    um_futures_client = UMFutures()
+
+    # Get historical open interest
+    openInterest30m = um_futures_client.open_interest_hist(symbol, "30m")
+    oidf = pd.DataFrame(openInterest30m)
+    oidf['sumOpenInterest'] = oidf['sumOpenInterest'].astype(float)
+    oidf['open_interest_change'] = oidf['sumOpenInterest'].diff()
+    oidf['open_interest_pct_change'] = oidf['open_interest_change'] / oidf['sumOpenInterest'].shift(1) * 100
+    
+    return oidf
+
+def calculate_OI_strength(oidf):
+    # Get present open interest
+    present_open_interest = float(um_futures_client.open_interest(symbol)['openInterest'])
+
+    # Calculate the last pct_change using the present open interest and the last value of openInterest30m
+    last_value = oidf.iloc[-1]['sumOpenInterest']
+    last_pct_change = (present_open_interest - last_value) / last_value * 100
+
+    # Get the last two pct_changes from openInterest30m
+    last_two_pct_changes = oidf['open_interest_pct_change'].tail(2).values.tolist()
+
+    # Add the newly calculated last_pct_change to the list
+    last_two_pct_changes.append(last_pct_change)
+
+    return last_two_pct_changes
+
+def categorize_strength(pct_change):
+    if pct_change <= -1:
+        return 'Strong Decrease'
+    elif pct_change <= -0.25:
+        return 'Weak Decrease'
+    elif pct_change >= 1:
+        return 'Strong Increase'
+    elif pct_change >= 0.25:
+        return 'Weak Increase'
+    else:
+        return 'No Significant Change'
+
+def calculate_score(direction, third_last_strength, second_last_strength, last_strength):
+    if direction == "向上":
+        score_mapping = {
+            'Strong Decrease': [-0.5, -0.75, -1],
+            'Weak Decrease': [-0.25, -0.5, -0.75],
+            'Strong Increase': [0.5, 0.75, 1],
+            'Weak Increase': [0.25, 0.5, 0.75],
+            'No Significant Change': [0, 0, 0]}
+    elif direction == "向下":
+        score_mapping = {
+            'Strong Decrease': [0.5, 0.75, 1],
+            'Weak Decrease': [0.25, 0.5, 0.75],
+            'Strong Increase': [-0.5, -0.75, -1],
+            'Weak Increase': [-0.25, -0.5, -0.75],
+            'No Significant Change': [0, 0, 0]}
+    score = (score_mapping[third_last_strength][0] +
+             score_mapping[second_last_strength][1] +
+             score_mapping[last_strength][2])
+    return score
+
+def extract_info(message):
+    pinzhong = re.search(r'品种\s*:\s*(\w+)', message)
+    fangxiang = re.search(r'方向\s*:\s*(\S+?),', message)
+    bodonglv = re.search(r'波动率\s*:\s*([\d.]+)%', message)
+    closeprice = re.search(r'close\s*:\s*([\d.]+)', message)  # Extract "close" value
+
+    if pinzhong and fangxiang and bodonglv and closeprice:
+        symbol = pinzhong.group(1)
+        direction = fangxiang.group(1)
+        bodonglv_value = float(bodonglv.group(1)) / 100
+        close_value = float(closeprice.group(1))
+        return symbol, direction, bodonglv_value, close_value
+    else:
+        return None
+
+symbol = 'LINAUSDT'
+direction = '向上'
+um_futures_client = UMFutures()
+if __name__ == '__main__':
+    # Get historical open interest data
+    oidf = grab_history_OI(symbol)
+
+    # Get last two pct_changes
+    last_two_pct_changes = calculate_OI_strength(oidf)
+
+    # Get the last three strengths
+    third_last_strength = categorize_strength(last_two_pct_changes[-3])
+    second_last_strength = categorize_strength(last_two_pct_changes[-2])
+    last_strength = categorize_strength(last_two_pct_changes[-1])
+
+    # Calculate final score
+    final_score = calculate_score(direction, third_last_strength, second_last_strength, last_strength)
+
+    print(f"Final score: {final_score}")
