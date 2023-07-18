@@ -12,8 +12,8 @@ from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClie
 config_logging(logging, logging.DEBUG)
 
 # Binance API settings
-key = "N3oNEvz5fUywA37zZZxs6V2txeUbx2VSlxeh9Eq0SaPhkYero8DpxBj5ymuXoQkF"
-secret = "qbaqxy6UtJXDAThovrQs6BSFF8is1VOCoYPxeLpE5rzJwmEnmDTCxRPhKsLU8DzY"
+key = ""
+secret = ""
 
 um_futures_client = UMFutures(key=key, secret=secret)
 ws_response = um_futures_client.new_listen_key()
