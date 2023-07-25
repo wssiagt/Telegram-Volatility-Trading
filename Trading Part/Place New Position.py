@@ -4,30 +4,26 @@ import pandas as pd
 import asyncio
 import re
 import time
+import nest_asyncio
+import weakref
+import threading
 from telethon import TelegramClient, events
 from binance.lib.utils import config_logging
 from binance.error import ClientError
-import nest_asyncio
-import weakref
 from datetime import datetime
-import threading
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
-
-
-# Telegram bot settings
+#Telegram API
 api_id = ''
 api_hash = ''
-phone = ''
+phone = '+'
 group_chat_name = ''
-
-# Binance API settings
+# Binance API
 key = ""
 secret = ""
 
 config_logging(logging, logging.INFO)
 logging.getLogger('telethon').setLevel(logging.WARNING)
 um_futures_client = UMFutures(key=key, secret=secret)
-#ws_response = um_futures_client.new_listen_key()
 
 holding_position = {}
 symbol_timers = {}
@@ -35,20 +31,14 @@ opening_orders = {}
 symbol_info_dict = {}
 tasks = weakref.WeakSet()
 loop = asyncio.get_event_loop()
-
-async def main():
-    global tasks
-    global loop
-    tasks.add(asyncio.create_task(get_symbol_info_dict(um_futures_client)))
-    await asyncio.gather(telegram_start(),websocket_start())
-    for task in tasks:
-        task.cancel()
+weak_loop = weakref.ref(loop)
+fixed_listen_key = ""
 
 async def telegram_start():
     global tasks
     client = TelegramClient('anon', api_id, api_hash)
     await client.start(phone)
-    print("Client connected.")
+    print("Telegram connected.")
     group_chat_entity = None
     async for dialog in client.iter_dialogs():
         if dialog.name == group_chat_name:
@@ -66,36 +56,35 @@ async def telegram_start():
             print(signal_decision)
             while signal_decision != "PENDING":
                 if signal_decision == "FAIL":
-                    print("Signal Ignore")
+                    print("信号忽略")
                     break
                 elif signal_decision == "BEST":
                     base_amount = 50
                     await place_new_order(um_futures_client, symbol, direction, close_value, base_amount)
                     tasks.add(asyncio.create_task(opening_order_check(symbol)))
-                    print('OI Fine, trade 50 usdt')
+                    print('OI符合要求，仓位大')
                     print('-----------------------------------------------------------------------')
                     break
                 elif signal_decision == "BETTER":
                     base_amount = 30
                     await place_new_order(um_futures_client, symbol, direction, close_value, base_amount)
                     tasks.add(asyncio.create_task(opening_order_check(symbol)))
-                    print('OI Fine, trade 30 usdt')
+                    print('OI符合要求，仓位大')
                     print('-----------------------------------------------------------------------')
                     break
                 elif signal_decision == "EXIST":
-                    print("Position Exist")
+                    print("已有持仓")
                     print('-----------------------------------------------------------------------')
                     break
             if signal_decision == "PENDING":
                 um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
-                print("Pending Order Update")
+                print("新信号，更新开仓价")
                 print('-----------------------------------------------------------------------')
                 signal_decision == "PASS"
                 
     await client.run_until_disconnected()
-        
+    
 def signal_handler(symbol, direction):
-    # signal_decision == None
     oidf = grab_history_OI(um_futures_client, symbol)
     try:
         last_two_pct_changes = calculate_OI_strength(um_futures_client, symbol, oidf)
@@ -118,12 +107,10 @@ def signal_handler(symbol, direction):
             elif final_score >= 1:
                 signal_decision = "BETTER"
             else:
-                signal_decision = "FAIL"
-                
+                signal_decision = "FAIL"               
     return signal_decision
 
 def grab_history_OI(client, symbol):
-    # um_futures_client = UMFutures()
     openInterest30m = client.open_interest_hist(symbol, "15m")
     oidf = pd.DataFrame(openInterest30m)
     oidf['sumOpenInterest'] = oidf['sumOpenInterest'].astype(float)
@@ -147,7 +134,7 @@ def categorize_strength(pct_change):
         return 'Weak Decrease'
     elif pct_change >= 0.75:
         return 'Strong Increase'
-    elif pct_change >= 0.35:
+    elif pct_change >= 0.5:
         return 'Weak Increase'
     else:
         return 'No Significant Change'
@@ -177,7 +164,6 @@ def extract_info_from_message(message):
     fangxiang = re.search(r'方向\s*:\s*(\S+?),', message)
     bodonglv = re.search(r'波动率\s*:\s*([\d.]+)%', message)
     closeprice = re.search(r'close\s*:\s*([\d.]+)', message)
-
     if pinzhong and fangxiang and bodonglv and closeprice:
         symbol = pinzhong.group(1)
         direction = fangxiang.group(1)
@@ -189,7 +175,7 @@ def extract_info_from_message(message):
 
 async def get_symbol_info_dict(client):
     global symbol_info_dict
-    print('Get Symbol Info')
+    print('获取交易所信息')
     while True:
         exchange_info = client.exchange_info()
         symbol_list = exchange_info['symbols']
@@ -215,45 +201,45 @@ async def place_new_order(client, symbol, position_side, close_value, base_amoun
             quantity=quantity,
             timeInForce="GTC",
             price=price,
-            newClientOrderId = symbol + '_OPEN'
+            newClientOrderId = symbol + '_OP'
         )
         time_now = datetime.now().strftime("%H:%M:%S")
         print(time_now)
     except ClientError as error:
         logging.error(
             "Found error. status: {}, error code: {}, error message: {}".format(
-                error.status_code, error.error_code, error.error_message
-            )
-        )
-        
+                error.status_code, error.error_code, error.error_message))
+
 async def symbol_timer(symbol):
     global symbol_timers
     await asyncio.sleep(60 * 15)
     if symbol in symbol_timers:
         del symbol_timers[symbol]
-        print('Countdown Finished')
+        print('建仓冷却完毕')
 
 async def opening_order_check(symbol):
     global opening_orders
     await asyncio.sleep(495)
     try:
         response = um_futures_client.cancel_order(symbol=symbol, origClientOrderId=symbol +'_OPEN', recvWindow=2000)
-        print(symbol, 'Pending Order Expired')
+        print(symbol, '开单等待超时，取消开单')
         um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
-        # del opening_orders[symbol]
     except ClientError as error:
-        print(symbol,'Order Filled')
+        print(symbol,'订单已成交')
         
 def binance_message_handler(message):
     global holding_position
     global opening_orders
     global symbol_timers
+    global error_occurred
     if 'result' in message:
         print("Start")
-        return
     else:
         event_type = message.get('e')
-        if event_type == 'ACCOUNT_UPDATE':
+        if event_type == "listenKeyExpired":
+            error_occurred = True
+            print("listenKeyExpired来自message_handler")
+        elif event_type == 'ACCOUNT_UPDATE':
             account_info = message.get('a')
             if account_info != None:
                 event_reason = account_info.get('m')
@@ -295,36 +281,65 @@ def binance_message_handler(message):
                 del holding_position[symbol]
                 print('holding_position', holding_position)
                 tasks.add(loop.create_task(symbol_timer(symbol)))
-
-async def delayed_close(client):
-    global ws_response
-    await asyncio.sleep(24 * 60 * 53)  # Wait for 24 hours
-    ws_client.close()
-    print("Re-generate Websocket connection")
-    um_futures_client.close_listen_key(ws_response['listenKey'])
-    ws_response = um_futures_client.new_listen_key()
-    
-async def websocket_start():
-    global ws_response
+        
+def keep_alive_listen_key(client, listen_key):
     global error_occurred
-    loop = asyncio.get_event_loop()
-    ws_response = um_futures_client.new_listen_key()
+    print('Keep listenkey alive start')
     while True:
-        # Reset the error_occurred flag
-        error_occurred = False
+        try:
+            time.sleep(29*50)
+            client.renew_listen_key(listen_key)
+        except Exception as error:
+            print(f"Renew listenkey: {error}")
+            error_occurred = True
+
+def get_new_listen_key(client):
+    global error_occurred
+    global fixed_listen_key
+    try:
+        ws_response = client.new_listen_key()
+        fixed_listen_key = ws_response["listenKey"]
+    except Exception as error:
+        print(f"Get new listenkey: {error}")
+        error_occurred = True
+
+async def websocket_start():
+    global error_occurred
+    error_occurred = False
+    get_new_listen_key(um_futures_client)
+    keep_alive_thread = threading.Thread(target=keep_alive_listen_key, args=(um_futures_client, fixed_listen_key), daemon=True)
+    keep_alive_thread.start()
+    while True:
+        get_new_listen_key(um_futures_client)
+        time.sleep(0.3)
         ws_client = UMFuturesWebsocketClient()
         ws_client.user_data(
-                    listen_key=ws_response["listenKey"],
-                    id=1,
-                    callback=binance_message_handler,
-                )
+                        listen_key = fixed_listen_key,
+                        id=1,
+                        callback = binance_message_handler)
         ws_client.start()
-        loop.create_task(delayed_close(ws_client))
         while not error_occurred:
-            await asyncio.sleep(1)
+            await asyncio.sleep(23*60*60)
+            ws_client.close()
+            print("Websocket连接已更新，23小时")
+            continue
+        print("Websocket_start检测到error，关闭当前连接重启websocket")
+        try:
+            ws_client.close()
+            time.sleep(5)
+        except Exception as error:
+            print("websocket重启失败")
 
-        print("An error occurred in one of the threads. Restarting the script in 60 seconds...")
-        time.sleep(15)
+async def main():
+    global tasks
+    global loop
+    try:
+        tasks.add(asyncio.create_task(get_symbol_info_dict(um_futures_client)))
+        await asyncio.gather(telegram_start(),websocket_start())
 
+    except Exception as error:
+        print("Main Problem")
+        print(f"Error in main: {error}")
+error_occurred = False
 nest_asyncio.apply()
 asyncio.get_event_loop().run_until_complete(main())
