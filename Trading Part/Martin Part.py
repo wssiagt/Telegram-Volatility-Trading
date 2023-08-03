@@ -2,9 +2,7 @@ import logging
 import time
 import threading
 import math
-#import asyncio
-#import nest_asyncio
-#import weakref
+import weakref
 from datetime import datetime
 from binance.um_futures import UMFutures
 from binance.lib.utils import config_logging
@@ -17,8 +15,7 @@ key = ""
 secret = ""
 
 um_futures_client = UMFutures(key=key, secret=secret)
-#tasks = weakref.WeakSet()
-#loop = asyncio.get_event_loop()
+tasks = weakref.WeakSet()
 
 # TP and SL config
 stop_loss_percent = 0.02
@@ -68,6 +65,7 @@ def message_handler(message):
     global add_order_ids
     global holding_position
     global symbol_counters
+    global error_occurred
     if 'result' in message:
         print("Message handler start")
         return
@@ -75,9 +73,9 @@ def message_handler(message):
         try:
             time_now = datetime.now().strftime("%H:%M:%S")
             print(time_now)
+            print(message)
             event_type = message.get('e')
             if event_type == "listenKeyExpired":
-                global error_occurred
                 error_occurred = True
                 print("listenKeyExpired来自message_handler")
                 
@@ -108,41 +106,70 @@ def message_handler(message):
                 if order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_OP':
                     print('有新建仓：', symbol)
                     symbol_counters[symbol] = 0
-                    #print('计数器：', symbol_counters)
-                    place_take_profit_order(symbol, take_profit_percent, symbol_info_dict, holding_position)
-                    time.sleep(0.5)
-                    place_additional_order(symbol, add_position_multiplier, price_change_rate, symbol_info_dict, add_order_ids, holding_position)
-
+                    try:
+                        place_take_profit_order(symbol, take_profit_percent, symbol_info_dict, holding_position)
+                        time.sleep(0.5)
+                        place_additional_order(symbol, add_position_multiplier, price_change_rate, symbol_info_dict, add_order_ids, holding_position)
+                    except Exception as error:
+                        print("New position Problem")
+                        print(f"Error in message handler thread: {error}")
+                        error_occurred = True
+                elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_SM':
+                    print("Opposite stop-market filled.")
+                    try:
+                        um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
+                        del symbol_counters[symbol]
+                    except Exception as error:
+                        print("Opposite signal Problem")
+                        print(f"Error in message handler thread: {error}")
+                        error_occurred = True
                 elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol+'_TK':
-                    um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
-                    print(symbol, '止盈单成交')
-                    #del tp_order_ids[symbol]
-                    #del sl_order_ids[symbol]
-                    del symbol_counters[symbol]
+                    try:
+                        um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
+                        print(symbol, '止盈单成交')
+                        del symbol_counters[symbol]
+                    except Exception as error:
+                        print("Take profit Problem")
+                        print(f"Error in message handler thread: {error}")
+                        error_occurred = True
 
                 elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_ST':
-                    um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
-                    print(symbol, "止损单成交")
-                    #del tp_order_ids[symbol]
-                    #del sl_order_ids[symbol]
-                    del symbol_counters[symbol]
+                    try:
+                        um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
+                        print(symbol, "止损单成交")
+                        del symbol_counters[symbol]
+                    except Exception as error:
+                        print("Take profit Problem")
+                        print(f"Error in message handler thread: {error}")
+                        error_occurred = True
 
                 elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_ADD':
                     if symbol in holding_position:
                         if symbol in symbol_counters:
+                            print('计数器：', symbol_counters)
                             if symbol_counters[symbol] == max_counter:
-                                place_stop_loss_order(symbol, stop_loss_percent, symbol_info_dict, holding_position)
-                                time.sleep(0.2)
-                                place_take_profit_order(symbol, take_profit_percent, symbol_info_dict, holding_position)
+                                try:
+                                    place_stop_loss_order(symbol, stop_loss_percent, symbol_info_dict, holding_position)
+                                    time.sleep(0.2)
+                                    place_take_profit_order(symbol, take_profit_percent, symbol_info_dict, holding_position)
+                                except Exception as error:
+                                    print("Final stop loss Problem")
+                                    print(f"Error in message handler thread: {error}")
+                                    error_occurred = True
                             elif symbol_counters[symbol] < max_counter:
                                 symbol_counters[symbol] += 1
-                                um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
-                                del tp_order_ids[symbol]
-                                print('止盈单已取消！')
-                                place_additional_order(symbol, add_position_multiplier, price_change_rate, symbol_info_dict, add_order_ids, holding_position)
-                                time.sleep(0.2)
-                                place_take_profit_order(symbol, take_profit_percent, symbol_info_dict, holding_position)
-                                print(symbol, "加仓成交, 新止盈单")
+                                try:
+                                    um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
+                                    del tp_order_ids[symbol]
+                                    print('止盈单已取消！')
+                                    place_additional_order(symbol, add_position_multiplier, price_change_rate, symbol_info_dict, add_order_ids, holding_position)
+                                    time.sleep(0.2)
+                                    place_take_profit_order(symbol, take_profit_percent, symbol_info_dict, holding_position)
+                                    print(symbol, "加仓成交, 新止盈单")
+                                except Exception as error:
+                                    print("Final stop loss Problem")
+                                    print(f"Error in message handler thread: {error}")
+                                    error_occurred = True
 
                 elif order_info.get('x') == 'NEW' and order_info.get('X') == 'NEW':
                     if custom_id == symbol+'_TK':
@@ -169,7 +196,7 @@ def message_handler(message):
                 elif order_info.get('x') == 'CANCELED' and order_info.get('X') == 'CANCELED':
                     if custom_id == symbol+'_TK':
                         #del tp_order_ids[symbol]
-                        #print('止盈单已取消！')
+                        print('止盈单已取消！')
                         pass
                     elif custom_id == symbol + '_ADD':
                         del add_order_ids[symbol]
@@ -299,34 +326,28 @@ def keep_alive_listen_key(client, listen_key):
 def websocket_start():
     global error_occurred
     error_occurred = False
-    get_new_listen_key(um_futures_client)
-    keep_alive_thread = threading.Thread(target=keep_alive_listen_key, args=(um_futures_client, fixed_listen_key), daemon=True)
-    keep_alive_thread.start()
     while True:
-        get_new_listen_key(um_futures_client)
-        time.sleep(0.3)
-        ws_client = UMFuturesWebsocketClient()
-        ws_client.user_data(
-                        listen_key = fixed_listen_key,
-                        id=1,
-                        callback = message_handler)
-        ws_client.start()
-        while not error_occurred:
+        try:
+            get_new_listen_key(um_futures_client)
+            time.sleep(0.3)
+            ws_client = UMFuturesWebsocketClient()
+            ws_client.user_data(
+                            listen_key = fixed_listen_key,
+                            id=1,
+                            callback = message_handler)
+            ws_client.start()
             time.sleep(23*60*60)
             ws_client.close()
             print("Websocket连接已更新，23小时")
-            break
-        print("Websocket_start检测到error，关闭当前连接重启websocket")
-        try:
-            ws_client.close()
-            time.sleep(5)
         except Exception as error:
             print("websocket重启失败")
 
 def main():
     global tasks
-    #global loop
     try:
+        get_new_listen_key(um_futures_client)
+        keep_alive_thread = threading.Thread(target=keep_alive_listen_key, args=(um_futures_client, fixed_listen_key), daemon=True)
+        keep_alive_thread.start()
         get_symbol_thread = threading.Thread(target=get_symbol_info_dict, args=(um_futures_client,), daemon=True)
         get_symbol_thread.start()
         websocket_start()
