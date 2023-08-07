@@ -113,7 +113,9 @@ def message_handler(message):
                     except Exception as error:
                         print("New position Problem")
                         print(f"Error in message handler thread: {error}")
+                        stop_market_error(um_futures_client, symbol)
                         error_occurred = True
+                        
                 elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_SM':
                     print("Opposite stop-market filled.")
                     try:
@@ -255,9 +257,27 @@ def place_stop_loss_order(symbol, stop_loss_percent, symbol_info_dict, holding_p
 
     except ClientError as error:
         print("Found error. status: {}, error code: {}, error message: {}".format(
-            error.status_code, error.error_code, error.error_message
+            error.status_code, error.error_code, error.error_message))
+        
+def stop_market_error(client, symbol):
+    position_detail = holding_position[symbol]
+    side = 'SELL' if reduce_quantity > 0 else 'BUY'
+    try:
+        response = client.new_order(
+            symbol=symbol,
+            side=side,
+            type="STOP_MARKET",
+            closePosition=True,
+            timeInForce="GTC",
+            newClientOrderId = symbol + '_SM'
         )
-             )
+        time_now = datetime.now().strftime("%H:%M:%S")
+        print(time_now)
+    except ClientError as error:
+        logging.error(
+            "Found error. status: {}, error code: {}, error message: {}".format(
+                error.status_code, error.error_code, error.error_message))
+        
 def place_additional_order(symbol, add_position_multiplier, price_change_rate, symbol_info_dict, add_order_ids, holding_position):
     position_detail = holding_position[symbol]
     position_amt = float(position_detail["position_amount"])
