@@ -12,12 +12,12 @@ from binance.lib.utils import config_logging
 from binance.error import ClientError
 from datetime import datetime
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
-#Telegram API
+
 api_id = ''
 api_hash = ''
 phone = '+'
 group_chat_name = ''
-# Binance API
+
 key = ""
 secret = ""
 
@@ -53,61 +53,73 @@ async def telegram_start():
         symbol, direction, bodonglv_value, close_value = extract_info_from_message(tele_message)
         if symbol and direction and bodonglv_value and close_value:
             signal_decision = signal_handler(symbol, direction)
-            print(signal_decision)
+            time_now = datetime.now().strftime("%H:%M:%S")
+            print(time_now, signal_decision)
             while signal_decision != "PENDING":
+                if signal_decision == "OPPOSITE":
+                    print("Opposite signal, stop loss immediatly")
+                    await stop_market_opposite(um_futures_client, symbol, direction, close_value)
+                    break
                 if signal_decision == "FAIL":
-                    print("信号忽略")
+                    print("Signal Ignore")
                     break
                 elif signal_decision == "BEST":
                     base_amount = 50
                     await place_new_order(um_futures_client, symbol, direction, close_value, base_amount)
                     tasks.add(asyncio.create_task(opening_order_check(symbol)))
-                    print('OI符合要求，仓位大')
+                    print('OI good, open 50USDT')
                     print('-----------------------------------------------------------------------')
                     break
                 elif signal_decision == "BETTER":
                     base_amount = 30
                     await place_new_order(um_futures_client, symbol, direction, close_value, base_amount)
                     tasks.add(asyncio.create_task(opening_order_check(symbol)))
-                    print('OI符合要求，仓位大')
+                    print('OI better, open 30USDT')
                     print('-----------------------------------------------------------------------')
                     break
                 elif signal_decision == "EXIST":
-                    print("已有持仓")
+                    print("Position Exist")
                     print('-----------------------------------------------------------------------')
                     break
             if signal_decision == "PENDING":
                 um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
-                print("新信号，更新开仓价")
+                print("Pending order update new entry price")
                 print('-----------------------------------------------------------------------')
                 signal_decision == "PASS"
                 
     await client.run_until_disconnected()
     
 def signal_handler(symbol, direction):
-    oidf = grab_history_OI(um_futures_client, symbol)
-    try:
-        last_two_pct_changes = calculate_OI_strength(um_futures_client, symbol, oidf)
-        third_last_strength = categorize_strength(last_two_pct_changes[-3])
-        second_last_strength = categorize_strength(last_two_pct_changes[-2])
-        last_strength = categorize_strength(last_two_pct_changes[-1])
-        final_score = calculate_score(direction, third_last_strength, second_last_strength, last_strength)
-    except ClientError:
-        final_score = 0
-        print(final_score)
-        signal_decision = "FAIL"
-    if symbol in holding_position or symbol in symbol_timers:
-        signal_decision = "EXIST"
-    else:
-        if symbol in opening_orders:
-            signal_decision = "PENDING"
+    if symbol in holding_position:
+        print('holding_position',holding_position)
+        message_direction = "Long" if direction == "å‘ä¸Š" else "Short"
+        print(f"Symbol {symbol} is already in holding position.")
+        if message_direction != holding_position[symbol]['position_direction']:
+            signal_decision = "OPPOSITE"
         else:
-            if final_score >= 1.25 :
-                signal_decision = "BEST"
-            elif final_score >= 1:
-                signal_decision = "BETTER"
-            else:
-                signal_decision = "FAIL"               
+            signal_decision = "EXIST"
+    elif symbol in symbol_timers:
+        signal_decision = "EXIST"
+    elif symbol in opening_orders:
+        signal_decision = "PENDING"
+    else:
+        try:
+            oidf = grab_history_OI(um_futures_client, symbol)
+            last_two_pct_changes = calculate_OI_strength(um_futures_client, symbol, oidf)
+            third_last_strength = categorize_strength(last_two_pct_changes[-3])
+            second_last_strength = categorize_strength(last_two_pct_changes[-2])
+            last_strength = categorize_strength(last_two_pct_changes[-1])
+            final_score = calculate_score(direction, third_last_strength, second_last_strength, last_strength)
+            print(final_score)
+        except ClientError:
+            final_score = 0
+            signal_decision = "FAIL"
+        if final_score >= 1.25 :
+            signal_decision = "BEST"
+        elif final_score >= 1:
+            signal_decision = "BETTER"
+        else:
+            signal_decision = "FAIL"            
     return signal_decision
 
 def grab_history_OI(client, symbol):
@@ -120,7 +132,6 @@ def grab_history_OI(client, symbol):
 
 def calculate_OI_strength(client, symbol, oidf):
     present_open_interest = float(client.open_interest(symbol)['openInterest'])
-    print("The present OI is: ", present_open_interest)
     last_value = oidf.iloc[-1]['sumOpenInterest']
     last_pct_change = (present_open_interest - last_value) / last_value * 100
     last_two_pct_changes = oidf['open_interest_pct_change'].tail(2).values.tolist()
@@ -140,14 +151,14 @@ def categorize_strength(pct_change):
         return 'No Significant Change'
 
 def calculate_score(direction, third_last_strength, second_last_strength, last_strength):
-    if direction == "向上":
+    if direction == "å‘ä¸Š":
         score_mapping = {
             'Strong Decrease': [-0.5, -0.75, -1],
             'Weak Decrease': [-0.25, -0.5, -0.75],
             'Strong Increase': [0.5, 0.75, 1],
             'Weak Increase': [0.25, 0.5, 0.75],
             'No Significant Change': [0, 0, 0]}
-    elif direction == "向下":
+    elif direction == "å‘ä¸‹":
         score_mapping = {
             'Strong Decrease': [0.5, 0.75, 1],
             'Weak Decrease': [0.25, 0.5, 0.75],
@@ -160,9 +171,9 @@ def calculate_score(direction, third_last_strength, second_last_strength, last_s
     return score
 
 def extract_info_from_message(message):
-    pinzhong = re.search(r'品种\s*:\s*(\w+)', message)
-    fangxiang = re.search(r'方向\s*:\s*(\S+?),', message)
-    bodonglv = re.search(r'波动率\s*:\s*([\d.]+)%', message)
+    pinzhong = re.search(r'å“ç§\s*:\s*(\w+)', message)
+    fangxiang = re.search(r'æ–¹å‘\s*:\s*(\S+?),', message)
+    bodonglv = re.search(r'æ³¢åŠ¨çŽ‡\s*:\s*([\d.]+)%', message)
     closeprice = re.search(r'close\s*:\s*([\d.]+)', message)
     if pinzhong and fangxiang and bodonglv and closeprice:
         symbol = pinzhong.group(1)
@@ -175,7 +186,7 @@ def extract_info_from_message(message):
 
 async def get_symbol_info_dict(client):
     global symbol_info_dict
-    print('获取交易所信息')
+    print('Get symbol dict')
     while True:
         exchange_info = client.exchange_info()
         symbol_list = exchange_info['symbols']
@@ -192,7 +203,7 @@ async def place_new_order(client, symbol, position_side, close_value, base_amoun
     global symbol_info_dict, opening_orders
     price = round(close_value, symbol_info_dict[symbol]['pricePrecision'])
     quantity = round(base_amount / price, symbol_info_dict[symbol]['quantityPrecision'])
-    side = 'BUY' if position_side == '向上' else 'SELL'
+    side = 'BUY' if position_side == 'å‘ä¸Š' else 'SELL'
     try:
         response = client.new_order(
             symbol=symbol,
@@ -210,22 +221,42 @@ async def place_new_order(client, symbol, position_side, close_value, base_amoun
             "Found error. status: {}, error code: {}, error message: {}".format(
                 error.status_code, error.error_code, error.error_message))
 
+async def stop_market_opposite(client, symbol, position_side, close_value):
+    side = 'BUY' if position_side == 'å‘ä¸Š' else 'SELL'
+    price = round(close_value, symbol_info_dict[symbol]['pricePrecision'])
+    try:
+        response = client.new_order(
+            symbol=symbol,
+            side=side,
+            type="STOP_MARKET",
+            stopPrice=price,
+            closePosition=True,
+            timeInForce="GTC",
+            newClientOrderId = symbol + '_SM'
+        )
+        time_now = datetime.now().strftime("%H:%M:%S")
+        print(time_now)
+    except ClientError as error:
+        logging.error(
+            "Found error. status: {}, error code: {}, error message: {}".format(
+                error.status_code, error.error_code, error.error_message))
+        
 async def symbol_timer(symbol):
     global symbol_timers
     await asyncio.sleep(60 * 15)
     if symbol in symbol_timers:
         del symbol_timers[symbol]
-        print('建仓冷却完毕')
+        print('Cooldown finished.')
 
 async def opening_order_check(symbol):
     global opening_orders
     await asyncio.sleep(495)
     try:
-        response = um_futures_client.cancel_order(symbol=symbol, origClientOrderId=symbol +'_OPEN', recvWindow=2000)
-        print(symbol, '开单等待超时，取消开单')
+        response = um_futures_client.cancel_order(symbol=symbol, origClientOrderId=symbol +'_OP', recvWindow=2000)
+        print(symbol, 'Pending order overtimed, cancel pending position')
         um_futures_client.cancel_open_orders(symbol=symbol, recvWindow=2000)
     except ClientError as error:
-        print(symbol,'订单已成交')
+        print(symbol,'Order filled')
         
 def binance_message_handler(message):
     global holding_position
@@ -235,10 +266,11 @@ def binance_message_handler(message):
     if 'result' in message:
         print("Start")
     else:
+        print(message)
         event_type = message.get('e')
         if event_type == "listenKeyExpired":
             error_occurred = True
-            print("listenKeyExpired来自message_handler")
+            print("listenKeyExpired from message_handler")
         elif event_type == 'ACCOUNT_UPDATE':
             account_info = message.get('a')
             if account_info != None:
@@ -250,36 +282,30 @@ def binance_message_handler(message):
                         symbol = position.get('s')
                         position_amount = position.get('pa')
                         entry_price = position.get('ep')
-                        position_update = {'position_amount': position_amount, 'entry_price': entry_price}
+                        position_direction = "Long" if float(position_amount) > 0 else "Short"
+                        position_update = {'position_amount': position_amount, 'entry_price': entry_price, 'position_direction': position_direction}
                         holding_position[symbol] = position_update
                     if symbol in holding_position:
-                        position_update = {'position_amount': position_amount, 'entry_price': entry_price}
+                        position_update = {'position_amount': position_amount, 'entry_price': entry_price, 'position_direction': position_direction}
                         holding_position[symbol] = position_update
-                        print('来自account update 持仓信息：', holding_position)
-                        
         elif event_type == "ORDER_TRADE_UPDATE":
             order_info = message.get('o')
             csorderID = order_info['c']
             symbol = order_info['s']
             custom_id = order_info['c']
-            if order_info.get('x') == 'NEW' and order_info.get('X') == 'NEW' and custom_id == symbol + '_OPEN':
-                opening_orders[symbol] = "已挂单"
-                print('opening_orders',opening_orders)
-            elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_OPEN':
+            if order_info.get('x') == 'NEW' and order_info.get('X') == 'NEW' and custom_id == symbol + '_OP':
+                opening_orders[symbol] = "Order placed"
+            elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_OP':
                 del opening_orders[symbol]
-                print('opening_orders',opening_orders)
-            elif order_info.get('x') == 'CANCELED' and order_info.get('X') == 'CANCELED' and custom_id == symbol + '_OPEN':
+            elif order_info.get('x') == 'CANCELED' and order_info.get('X') == 'CANCELED' and custom_id == symbol + '_OP':
                 del opening_orders[symbol]
-                print('opening_orders',opening_orders)
-            elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_TAKE':
-                symbol_timers[symbol] = "已成交"
+            elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_TK':
+                symbol_timers[symbol] = "Order filled"
                 del holding_position[symbol]
-                print('holding_position',holding_position)
                 tasks.add(loop.create_task(symbol_timer(symbol))) 
-            elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_STOP':
-                symbol_timers[symbol] = "已成交"
+            elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_ST':
+                symbol_timers[symbol] = "Order filled"
                 del holding_position[symbol]
-                print('holding_position', holding_position)
                 tasks.add(loop.create_task(symbol_timer(symbol)))
         
 def keep_alive_listen_key(client, listen_key):
@@ -306,40 +332,35 @@ def get_new_listen_key(client):
 async def websocket_start():
     global error_occurred
     error_occurred = False
-    get_new_listen_key(um_futures_client)
-    keep_alive_thread = threading.Thread(target=keep_alive_listen_key, args=(um_futures_client, fixed_listen_key), daemon=True)
-    keep_alive_thread.start()
     while True:
-        get_new_listen_key(um_futures_client)
-        time.sleep(0.3)
-        ws_client = UMFuturesWebsocketClient()
-        ws_client.user_data(
-                        listen_key = fixed_listen_key,
-                        id=1,
-                        callback = binance_message_handler)
-        ws_client.start()
-        while not error_occurred:
+        try:
+            if error_occurred:
+                print("Restarting due to expired listen key...")
+                error_occurred = False  # Reset the error flag
+            get_new_listen_key(um_futures_client)
+            time.sleep(0.3)
+            ws_client = UMFuturesWebsocketClient()
+            ws_client.user_data(
+                            listen_key = fixed_listen_key,
+                            id=1,
+                            callback = binance_message_handler)
+            ws_client.start()
             await asyncio.sleep(23*60*60)
             ws_client.close()
-            print("Websocket连接已更新，23小时")
-            continue
-        print("Websocket_start检测到error，关闭当前连接重启websocket")
-        try:
-            ws_client.close()
-            time.sleep(5)
+            print("Websocket connection expired,23hour")
+            time.sleep(2)
         except Exception as error:
-            print("websocket重启失败")
+            print("websocket re-connect failed")
 
 async def main():
     global tasks
     global loop
     try:
+        get_new_listen_key(um_futures_client)
         tasks.add(asyncio.create_task(get_symbol_info_dict(um_futures_client)))
+        keep_alive_thread = threading.Thread(target=keep_alive_listen_key, args=(um_futures_client, fixed_listen_key), daemon=True)
+        keep_alive_thread.start()
         await asyncio.gather(telegram_start(),websocket_start())
-
     except Exception as error:
         print("Main Problem")
         print(f"Error in main: {error}")
-error_occurred = False
-nest_asyncio.apply()
-asyncio.get_event_loop().run_until_complete(main())
