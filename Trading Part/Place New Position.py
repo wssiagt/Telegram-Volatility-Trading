@@ -13,10 +13,10 @@ from binance.error import ClientError
 from datetime import datetime
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 
-api_id = ''
-api_hash = ''
-phone = '+'
-group_chat_name = ''
+api_id = '27510341'
+api_hash = 'b49d0bad50b8af1b14100c6f8545986a'
+phone = '+351962835595'
+group_chat_name = 'ç‰›å­ç¾¤ä¿¡å·æŽ¨é€'
 
 key = ""
 secret = ""
@@ -222,14 +222,16 @@ async def place_new_order(client, symbol, position_side, close_value, base_amoun
                 error.status_code, error.error_code, error.error_message))
 
 async def stop_market_opposite(client, symbol, position_side, close_value):
-    side = 'BUY' if position_side == 'å‘ä¸Š' else 'SELL'
-    price = round(close_value, symbol_info_dict[symbol]['pricePrecision'])
+    position_detail = holding_position[symbol]
+    reduce_quantity = float(position_detail["position_amount"])
+    side = 'SELL' if reduce_quantity > 0 else 'BUY'
+    reduce_quantity = abs(round(reduce_quantity, symbol_info_dict[symbol]['quantityPrecision']))
     try:
         response = client.new_order(
             symbol=symbol,
             side=side,
-            type="STOP_MARKET",
-            stopPrice=price,
+            type="MARKET",
+            quantity=reduce_quantity,
             closePosition=True,
             timeInForce="GTC",
             newClientOrderId = symbol + '_SM'
@@ -304,6 +306,10 @@ def binance_message_handler(message):
                 del holding_position[symbol]
                 tasks.add(loop.create_task(symbol_timer(symbol))) 
             elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_ST':
+                symbol_timers[symbol] = "Order filled"
+                del holding_position[symbol]
+                tasks.add(loop.create_task(symbol_timer(symbol)))
+            elif order_info.get('x') == 'TRADE' and order_info.get('X') == 'FILLED' and custom_id == symbol + '_SM':
                 symbol_timers[symbol] = "Order filled"
                 del holding_position[symbol]
                 tasks.add(loop.create_task(symbol_timer(symbol)))
