@@ -105,11 +105,9 @@ def signal_handler(symbol, direction):
     else:
         try:
             oidf = grab_history_OI(um_futures_client, symbol)
-            last_two_pct_changes = calculate_OI_strength(um_futures_client, symbol, oidf)
-            third_last_strength = categorize_strength(last_two_pct_changes[-3])
-            second_last_strength = categorize_strength(last_two_pct_changes[-2])
-            last_strength = categorize_strength(last_two_pct_changes[-1])
-            final_score = calculate_score(direction, third_last_strength, second_last_strength, last_strength)
+            last_five_pct_changes = calculate_OI_strength(um_futures_client, symbol, oidf)
+            strengths = [categorize_strength(change) for change in last_five_pct_changes]
+            final_score = calculate_score(direction, strengths)
             print(final_score)
         except ClientError:
             final_score = 0
@@ -134,9 +132,9 @@ def calculate_OI_strength(client, symbol, oidf):
     present_open_interest = float(client.open_interest(symbol)['openInterest'])
     last_value = oidf.iloc[-1]['sumOpenInterest']
     last_pct_change = (present_open_interest - last_value) / last_value * 100
-    last_two_pct_changes = oidf['open_interest_pct_change'].tail(2).values.tolist()
-    last_two_pct_changes.append(last_pct_change)
-    return last_two_pct_changes
+    last_five_pct_changes = oidf['open_interest_pct_change'].tail(4).values.tolist()
+    last_five_pct_changes.append(last_pct_change)
+    return last_five_pct_changes
 
 def categorize_strength(pct_change):
     if pct_change <= -0.75:
@@ -150,24 +148,22 @@ def categorize_strength(pct_change):
     else:
         return 'No Significant Change'
 
-def calculate_score(direction, third_last_strength, second_last_strength, last_strength):
+def calculate_score(direction, strengths):
     if direction == "å‘ä¸Š":
         score_mapping = {
-            'Strong Decrease': [-0.5, -0.75, -1],
-            'Weak Decrease': [-0.25, -0.5, -0.75],
-            'Strong Increase': [0.5, 0.75, 1],
-            'Weak Increase': [0.25, 0.5, 0.75],
-            'No Significant Change': [0, 0, 0]}
+            'Strong Decrease': [-0.2, -0.4, -0.6, -0.8, -1],
+            'Weak Decrease': [-0.1, -0.2, -0.3, -0.4, -0.5],
+            'Strong Increase': [0.2, 0.4, 0.6, 0.8, 1],
+            'Weak Increase': [0.1, 0.2, 0.3, 0.4, 0.5],
+            'No Significant Change': [0, 0, 0, 0, 0]}
     elif direction == "å‘ä¸‹":
         score_mapping = {
-            'Strong Decrease': [0.5, 0.75, 1],
-            'Weak Decrease': [0.25, 0.5, 0.75],
-            'Strong Increase': [-0.5, -0.75, -1],
-            'Weak Increase': [-0.25, -0.5, -0.75],
-            'No Significant Change': [0, 0, 0]}
-    score = (score_mapping[third_last_strength][0] +
-             score_mapping[second_last_strength][1] +
-             score_mapping[last_strength][2])
+            'Strong Decrease': [0.2, 0.4, 0.6, 0.8, 1],
+            'Weak Decrease': [0.1, 0.2, 0.3, 0.4, 0.5],
+            'Strong Increase': [-0.2, -0.4, -0.6, -0.8, -1],
+            'Weak Increase': [-0.1, -0.2, -0.3, -0.4, -0.5],
+            'No Significant Change': [0, 0, 0, 0, 0]}
+    score = sum([score_mapping[strength][index] for index, strength in enumerate(strengths)])
     return score
 
 def extract_info_from_message(message):
@@ -232,7 +228,6 @@ async def stop_market_opposite(client, symbol, position_side, close_value):
             side=side,
             type="MARKET",
             quantity=reduce_quantity,
-            closePosition=True,
             timeInForce="GTC",
             newClientOrderId = symbol + '_SM'
         )
